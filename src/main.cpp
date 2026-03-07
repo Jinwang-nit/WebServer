@@ -66,7 +66,8 @@ int main(int argc, char* argv[])
     // 创建监听套接字，理解为通信接口，得先有接口然后再拿这个接口去绑定ip，端口这些
     int listenfd = socket(AF_INET, SOCK_STREAM, 0);
 
-    // 端口复用，当一个 TCP 服务端程序退出后，其绑定的端口并不会立即释放为了避免这个问题需要复用端口
+    // 端口复用：TCP连接断开的时候会有2MSL等待时间, 如果这个时间段内服务器重启了，但是因为时间没过端口没用释放
+    // 导致连接失败
     int reuse = 1;
     setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
@@ -89,7 +90,7 @@ int main(int argc, char* argv[])
 
     while (true)
     {
-        // 取事件
+        // 取事件，-1代表永久阻塞，num代表有多少个socket产生了事件
         int num = epoll_wait(epollfd, events, MAX_EVENT_NUMBER, -1);
         if (num < 0 && (errno != EINTR))
         {
@@ -109,7 +110,7 @@ int main(int argc, char* argv[])
 
                 if (http_conn::m_user_count >= MAX_FD)
                 {
-                    close(connfd);
+                    close(connfd); // 关闭连接
                     continue;
                 }
 
@@ -120,17 +121,16 @@ int main(int argc, char* argv[])
                 // }
 
                 // 将新客户端初始化放到数组中
-
                 users[connfd].init(connfd, client_address);
 
             }
-            else if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR))
+            else if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)) // 三个宏代表三种异常
             {
                 printf("ERROR\n");
                 // 对方异常断开
                 users[sockfd].close_conn();
             }
-            else if (events[i].events & EPOLLIN)
+            else if (events[i].events & EPOLLIN) // EPOLLIN代表缓冲区有数据
             {
                 printf("EPOLLIN\n");
                 if (users[sockfd].read())
@@ -142,7 +142,7 @@ int main(int argc, char* argv[])
                     users[sockfd].close_conn();
                 }
             }
-            else if (events[i].events & EPOLLOUT)
+            else if (events[i].events & EPOLLOUT) // EPOLLOUT代表缓冲区有空余空间
             {
                 printf("EPOLLOUT\n");
                 if (!users[sockfd].write())

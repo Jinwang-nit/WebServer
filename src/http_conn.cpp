@@ -162,7 +162,12 @@ http_conn::HTTP_CODE http_conn::parse_request_line(char* text) {
     char* method = text;
     if ( strcasecmp(method, "GET") == 0 ) { // 忽略大小写比较
         m_method = GET;
-    } else {
+    }
+    else if ( strcasecmp(method, "POST") == 0)
+    {
+        
+    } 
+    else {
         return BAD_REQUEST;
     }
     // /index.html HTTP/1.1
@@ -292,7 +297,7 @@ http_conn::HTTP_CODE http_conn::do_request()
     int len = strlen( doc_root );
     strncpy( m_real_file + len, m_url, FILENAME_LEN - len - 1 );
 
-    // 获取m_real_file文件的相关的状态信息，-1失败，0成功
+    // 获取m_real_file文件的相关的状态信息，-1失败，0成功，看文件是不是存在
     if ( stat( m_real_file, &m_file_stat ) < 0 ) {
         return NO_RESOURCE;
     }
