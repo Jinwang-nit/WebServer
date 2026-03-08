@@ -17,7 +17,9 @@
 #include "lock.h"
 #include<sys/uio.h>
 #include<string.h>
-
+#include<vector>
+#include<string>
+#include "mysql_conn.h"
 class http_conn
 {
 public:
@@ -28,7 +30,7 @@ public:
     static const int READ_BUFFER_SIZE = 2048;
     static const int WRITE_BUFFER_SIZE = 2048;
 
-// ***************状态机****************//
+#pragma region // ***************状态机****************//
    // HTTP请求方法，这里只支持GET
    enum METHOD {GET = 0, POST, HEAD, PUT, DELETE, TRACE, OPTIONS, CONNECT};
     
@@ -51,7 +53,18 @@ public:
        INTERNAL_ERROR      :   表示服务器内部错误
        CLOSED_CONNECTION   :   表示客户端已经关闭连接了
    */
-   enum HTTP_CODE { NO_REQUEST, GET_REQUEST, BAD_REQUEST, NO_RESOURCE, FORBIDDEN_REQUEST, FILE_REQUEST, INTERNAL_ERROR, CLOSED_CONNECTION };
+   enum HTTP_CODE 
+   { NO_REQUEST, // 请求不完整，需要继续读取客户数据
+    GET_REQUEST, // 表示获得了一个完成的客户请求
+    BAD_REQUEST, // 表示客户请求语法错误
+    NO_RESOURCE, // 表示服务器没有资源
+    FORBIDDEN_REQUEST, // 表示客户对资源没有足够的访问权限
+    FILE_REQUEST, // 文件请求,获取文件成功
+    INTERNAL_ERROR, // 表示服务器内部错误
+    CLOSED_CONNECTION, // 表示客户端已经关闭连接了
+    POST_SUCCESS, // POST成功
+    POST_FAIL, // POST失败
+};
    
    // 从状态机的三种可能状态，即行的读取状态，分别表示
    // 1.读取到一个完整的行 2.行出错 3.行数据尚且不完整
@@ -95,6 +108,24 @@ public:
     HTTP_CODE do_request();
 
     char *get_line(){return m_read_buffer + m_start_line;}
+    void parse_post_content(char* text);
+#pragma endregion
+
+#pragma region // ***************数据库****************//
+    enum DB_CODE
+    {
+        OPT_FAIL,
+        OPT_SUCCESS,
+    };
+
+
+
+    void init_mysql();  // 初始化数据库连接池
+    DB_CODE do_check_db(const char* username, const char* password); // 检查数据库信息是否存在
+    DB_CODE do_insert_db(const char* username, const char* password, const char* message); // 插入信息
+    DB_CODE do_log_access();
+#pragma endregion
+
 private:
     int m_socketfd;  // http连接的socket
     sockaddr_in m_address; // socket地址
@@ -103,6 +134,7 @@ private:
     int m_checked_idx; // 当前分析的字符在读缓冲区的位置
     int m_start_line; // 当前行的起始位置
 
+    // get
     char* m_url;
     char* m_version;
     METHOD m_method;
@@ -111,9 +143,16 @@ private:
     bool m_linger; // 是否保持连接
     int m_content_length;
 
+    // post
+    const char* m_username;
+    const char* m_password;
+    const char* m_message;
+
     CHECK_STATE m_check_state;
 
     void init(); // 初始化其余信息
+
+    
 };
 
 #endif

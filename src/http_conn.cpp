@@ -11,6 +11,9 @@ const char* error_404_form = "The requested file was not found on this server.\n
 const char* error_500_title = "Internal Error";
 const char* error_500_form = "There was an unusual problem serving the requested file.\n";
 
+const char* success_600_post = "send message success!\n";
+const char* fail_600_post = "send message fail!\n";
+
 // 网站的根目录
 const char* doc_root = "/home/atongmu/webserver/resources";
 
@@ -165,7 +168,7 @@ http_conn::HTTP_CODE http_conn::parse_request_line(char* text) {
     }
     else if ( strcasecmp(method, "POST") == 0)
     {
-        
+        m_method = POST;
     } 
     else {
         return BAD_REQUEST;
@@ -226,18 +229,59 @@ http_conn::HTTP_CODE http_conn::parse_header(char* text) {
         text += strspn( text, " \t" );
         m_host = text;
     } else {
-        printf( "oop! unknow header %s\n", text );
+        printf( "oop! unknow header = %s\n", text );
     }
     return NO_REQUEST;
 }
 
-// 我们没有真正解析HTTP请求的消息体，只是判断它是否被完整的读入了
+// 解析post_content
+void http_conn::parse_post_content(char* text)
+{
+    int len = strlen(text);
+        std::vector<std::string> s;
+        std::string temp = "";
+        for (int i = 0; i < len; i++)
+        {
+            if (text[i] == '&') 
+            {
+                temp = "";
+                s.push_back(temp);
+            }
+            else temp += text[i];
+        }
+        if (!temp.empty()) s.push_back(temp);
+        for (int i = 0; i < s.size(); i++)
+        {
+            size_t found = s[i].find('=');
+            std::string t = "";
+            if (found != std::string::npos) t = s[i].substr(found);
+
+            switch (i)
+            {
+            case 0:
+                m_username = t.data();
+                break;
+            case 1:
+                m_password = t.data();
+                break;
+            case 2:
+                m_message = t.data();
+                break;
+            default:
+                break;
+            }
+        }
+}
+
+// 解析HTTP请求的消息体
 http_conn::HTTP_CODE http_conn::parse_content( char* text ) {
     if ( m_read_idx >= ( m_content_length + m_checked_idx ) )
     {
         text[ m_content_length ] = '\0';
+        if (m_method == POST) parse_post_content(text);
         return GET_REQUEST;
     }
+
     return NO_REQUEST;
 }
 
@@ -252,7 +296,7 @@ http_conn::HTTP_CODE http_conn::process_read() {
         // 获取一行数据
         text = get_line();
         m_start_line = m_checked_idx;
-        printf( "got 1 http line: %s\n", text );
+        // printf( "got 1 http line: %s\n", text );
 
         switch ( m_check_state ) {
             case CHECK_STATE_REQUESTLINE: {
@@ -287,11 +331,115 @@ http_conn::HTTP_CODE http_conn::process_read() {
     return NO_REQUEST;
 }
 
+// 初始化MySQL连接池
+void http_conn::init_mysql() {
+    static bool mysql_initialized = false;
+    if (!mysql_initialized) {
+        mysql_pool::get_instance()->init("localhost", "atongmu", "123456", "webserver_db", 3306, 10);
+        mysql_initialized = true;
+    }
+}
+// 检查用户信息是否存在, 不存在就创建
+http_conn::DB_CODE http_conn::do_check_db(const char* username, const char* password)
+{
+    init_mysql();
+    
+    mysql_conn* conn = mysql_pool::get_instance()->get_connection();
+    if (!conn) {
+        return OPT_FAIL;
+    }
+
+    char sql[256];
+    snprintf(sql, sizeof(sql), "SELECT id FROM users WHERE username='%s'", conn->escape_string(username).c_str());
+
+    auto result = conn->query(sql);
+    if (!result.empty()) 
+    {
+        mysql_pool::get_instance()->release_connection(conn);
+        return OPT_SUCCESS;  // 用户已存在
+    }
+    snprintf(sql, sizeof(sql), 
+    "INSERT INTO users (username, password) VALUES ('%s', '%s')",
+    conn->escape_string(username).c_str(),
+    conn->escape_string(password).c_str());
+
+    if (!conn->update(sql)) 
+    {
+        mysql_pool::get_instance()->release_connection(conn);
+        return OPT_FAIL;
+    }
+    mysql_pool::get_instance()->release_connection(conn);
+    return OPT_SUCCESS;
+}
+ // 插入信息
+http_conn::DB_CODE http_conn::do_insert_db(const char* username, const char* password, const char* message)
+{
+    init_mysql();
+    
+    mysql_conn* conn = mysql_pool::get_instance()->get_connection();
+    if (!conn) {
+        return OPT_FAIL;
+    }
+
+    char sql[256];
+    snprintf(sql, sizeof(sql), "UPDATE users SET message='%s' WHERE username='%s'", 
+        conn->escape_string(message).c_str(),
+        conn->escape_string(username).c_str());
+    if (!conn->update(sql)) 
+    {
+        mysql_pool::get_instance()->release_connection(conn);
+        return OPT_FAIL;
+    }
+    mysql_pool::get_instance()->release_connection(conn);
+    return OPT_SUCCESS;
+}
+http_conn::DB_CODE http_conn::do_log_access()
+{
+    init_mysql();
+    
+    mysql_conn* conn = mysql_pool::get_instance()->get_connection();
+    if (!conn) {
+        return OPT_FAIL;
+    }
+    
+    // 获取IP地址
+    char ip_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &m_address.sin_addr, ip_str, INET_ADDRSTRLEN);
+    
+    // 获取请求方法和路径
+    const char* method_str = (m_method == GET) ? "GET" : "POST";
+    
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+             "INSERT INTO access_logs (ip_address, request_path, request_method) VALUES ('%s', '%s', '%s')",
+             ip_str, m_url, method_str);
+    
+    conn->update(sql);
+    mysql_pool::get_instance()->release_connection(conn);
+    
+    return OPT_FAIL;
+}
+
+
 // 当得到一个完整、正确的HTTP请求时，我们就分析目标文件的属性，
 // 如果目标文件存在、对所有用户可读，且不是目录，则使用mmap将其
 // 映射到内存地址m_file_address处，并告诉调用者获取文件成功
 http_conn::HTTP_CODE http_conn::do_request()
 {
+    if (m_method == POST)
+    {
+        // 数据库操作
+        do_log_access();
+        http_conn::DB_CODE ret = do_check_db(m_username, m_password);
+        if (ret == OPT_FAIL) return POST_FAIL;
+        else
+        {
+            do_insert_db(m_username, m_password, m_message);
+            return POST_SUCCESS;
+        }
+    }
+
+
     // "/home/webserver/resources"
     strcpy( m_real_file, doc_root );
     int len = strlen( doc_root );
@@ -464,6 +612,20 @@ bool http_conn::process_write(HTTP_CODE ret) {
             m_iv[ 1 ].iov_len = m_file_stat.st_size;
             m_iv_count = 2;
             return true;
+        case POST_SUCCESS:
+            add_status_line( 600, success_600_post );
+            add_headers( strlen( success_600_post ) );
+            if ( ! add_content( success_600_post ) ) {
+                return false;
+            }
+            break;
+        case POST_FAIL:
+        add_status_line( 600, fail_600_post );
+        add_headers( strlen( fail_600_post ) );
+        if ( ! add_content( fail_600_post ) ) {
+            return false;
+        }
+        break;
         default:
             return false;
     }
